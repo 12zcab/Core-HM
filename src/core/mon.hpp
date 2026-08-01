@@ -71,6 +71,7 @@ template <typename API>
 void impl_memset(uint16_t start, uint16_t end, uint8_t pattern) {
   do {
     API::BUS::write_bus(start, pattern);
+    delay(6);
   } while (start++ != end);
 }
 
