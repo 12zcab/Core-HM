@@ -80,14 +80,14 @@ void impl_memset(uint16_t start, uint16_t end, uint8_t pattern) {
     // (A 64-byte boundary happens whenever the lowest 6 bits wrap to 000000)
     uint16_t next = start + 1;
     if ((next & 0x003F) == 0x0000) {
-      API::TIME::delay_ms(5); // Wait for the current page to flash before starting the next
+      delay(5); // Wait for the current page to flash before starting the next
     }
 
     // 3. Keep looping until we have processed the 'end' address
   } while (start++ != end);
 
   // 4. Crucial: Wait 5ms at the very end so the final page finishes flashing
-  API::TIME::delay_ms(5); 
+  delay(5); 
 }
 
 
