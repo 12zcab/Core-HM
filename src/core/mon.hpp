@@ -69,11 +69,27 @@ void cmd_hex(cli::Args args) {
 // Write pattern from start to end, inclusive
 template <typename API>
 void impl_memset(uint16_t start, uint16_t end, uint8_t pattern) {
+  // Edge case: if start > end, handle or return to prevent infinite loop
+  if (start > end) return; 
+
   do {
+    // 1. Write the byte to the EEPROM page buffer
     API::BUS::write_bus(start, pattern);
-    delay(6);
+
+    // 2. Check if the NEXT address crosses a 64-byte page boundary
+    // (A 64-byte boundary happens whenever the lowest 6 bits wrap to 000000)
+    uint16_t next = start + 1;
+    if ((next & 0x003F) == 0x0000) {
+      API::TIME::delay_ms(5); // Wait for the current page to flash before starting the next
+    }
+
+    // 3. Keep looping until we have processed the 'end' address
   } while (start++ != end);
+
+  // 4. Crucial: Wait 5ms at the very end so the final page finishes flashing
+  API::TIME::delay_ms(5); 
 }
+
 
 template <typename API>
 void cmd_fill(cli::Args args) {
