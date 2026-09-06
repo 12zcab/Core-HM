@@ -12,6 +12,11 @@
 namespace core {
 namespace mon {
 
+// EEPROM Specification Constants for Hitachi HN28C256
+constexpr uint16_t HN28C256_PAGE_SIZE = 32;
+constexpr uint16_t HN28C256_PAGE_MASK = HN28C256_PAGE_SIZE - 1; // 0x001F
+constexpr uint32_t HN28C256_TWC_MS    = 10;                     // Write Cycle Time (10ms)
+
 template <typename API, uint8_t COL_SIZE = 16, uint8_t MAX_ROWS = 24>
 uint16_t impl_hex(uint16_t row, uint16_t end) {
   API::BUS::config_read();
@@ -55,7 +60,6 @@ uint16_t impl_hex(uint16_t row, uint16_t end) {
 // Dump memory as hex/ascii from row to end, inclusive
 template <typename API, uint8_t COL_SIZE = 16, uint8_t MAX_ROWS = 24>
 void cmd_hex(cli::Args args) {
-  // Default size to one row if not provided
   CORE_EXPECT_ADDR(API, uint16_t, start, args, return);
   CORE_OPTION_UINT(API, uint16_t, size, COL_SIZE, args, return);
   uint16_t end_incl = start + size - 1;
@@ -66,30 +70,25 @@ void cmd_hex(cli::Args args) {
   }
 }
 
-// Write pattern from start to end, inclusive
+// Write pattern from start to end, inclusive (32-byte HN28C256 Page Aware)
 template <typename API>
 void impl_memset(uint16_t start, uint16_t end, uint8_t pattern) {
-  // Edge case: if start > end, handle or return to prevent infinite loop
   if (start > end) return; 
 
   do {
-    // 1. Write the byte to the EEPROM page buffer
+    // 1. Write byte to the internal page buffer
     API::BUS::write_bus(start, pattern);
 
-    // 2. Check if the NEXT address crosses a 64-byte page boundary
-    // (A 64-byte boundary happens whenever the lowest 6 bits wrap to 000000)
+    // 2. Check if the NEXT address crosses the 32-byte page boundary (0x001F)
     uint16_t next = start + 1;
-    if ((next & 0x003F) == 0x0000) {
-      delay(5); // Wait for the current page to flash before starting the next
+    if ((next & HN28C256_PAGE_MASK) == 0x0000) {
+      delay(HN28C256_TWC_MS); // Wait 10ms for current 32-byte page commit
     }
-
-    // 3. Keep looping until we have processed the 'end' address
   } while (start++ != end);
 
-  // 4. Crucial: Wait 5ms at the very end so the final page finishes flashing
-  delay(5); 
+  // 3. Final delay to commit last partial page
+  delay(HN28C256_TWC_MS); 
 }
-
 
 template <typename API>
 void cmd_fill(cli::Args args) {
@@ -101,7 +100,7 @@ void cmd_fill(cli::Args args) {
   API::BUS::flush_write();
 }
 
-// Write string from start until null terminator
+// Write string from start until null terminator with byte delays
 template <typename API>
 uint16_t impl_strcpy(uint16_t start, const char* str) {
   for (;;) {
@@ -110,6 +109,7 @@ uint16_t impl_strcpy(uint16_t start, const char* str) {
       return start;
     }
     API::BUS::write_bus(start++, c);
+    delay(HN28C256_TWC_MS); // Ensure safe byte cycle time
   }
 }
 
@@ -123,6 +123,7 @@ void cmd_set(cli::Args args) {
     } else {
       CORE_EXPECT_UINT(API, uint8_t, data, args, return);
       API::BUS::write_bus(start++, data);
+      delay(HN28C256_TWC_MS); // Ensure safe byte cycle time
     }
   } while (args.has_next());
   API::BUS::flush_write();
@@ -133,13 +134,11 @@ template <typename API>
 void impl_memmove(uint16_t start, uint16_t end, uint16_t dest) {
   uint16_t delta = end - start;
   uint16_t dest_end = dest + delta;
-  // Buses narrower than 16-bits introduce cases with ghosting (wrap-around).
-  // This logic should work as long as start and dest are both within [0, 2^N),
-  // where N is the actual bus width.
-  // See [notes/memmove.png]
+
   bool a = dest <= end;
   bool b = dest_end < start;
   bool c = dest > start;
+
   if ((a && b) || (a && c) || (b && c)) {
     // Reverse copy from end to start
     for (uint16_t i = 0; i <= delta; ++i) {
@@ -147,6 +146,7 @@ void impl_memmove(uint16_t start, uint16_t end, uint16_t dest) {
       auto data = API::BUS::read_bus(end - i);
       API::BUS::config_write();
       API::BUS::write_bus(dest_end - i, data);
+      delay(HN28C256_TWC_MS);
     }
   } else {
     // Forward copy from start to end
@@ -155,6 +155,7 @@ void impl_memmove(uint16_t start, uint16_t end, uint16_t dest) {
       auto data = API::BUS::read_bus(start + i);
       API::BUS::config_write();
       API::BUS::write_bus(dest + i, data);
+      delay(HN28C256_TWC_MS);
     }
   }
   API::BUS::flush_write();
@@ -249,11 +250,17 @@ bool parse_ihx(F&& handle_byte) {
   return valid;
 }
 
-// Write IHX stream into memory
+// Write IHX stream into memory with enforced write delay
 template <typename API>
 void cmd_import(cli::Args) {
   API::BUS::config_write();
-  bool valid = parse_ihx<API>(API::BUS::write_bus);
+  
+  // Wrap write_bus inside a lambda enforcing 10ms delay per incoming byte
+  bool valid = parse_ihx<API>([](uint16_t address, uint8_t data) {
+    API::BUS::write_bus(address, data);
+    delay(HN28C256_TWC_MS);
+  });
+  
   API::newline();
   API::print_string(valid ? "OK" : "ERROR");
   API::newline();
